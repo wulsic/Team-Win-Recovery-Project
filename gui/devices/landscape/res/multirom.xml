@@ -232,6 +232,24 @@
 
 			<object type="button">
 				<highlight color="%highlight_color%" />
+				<placement x="%col1_x%" y="%row2_y%" />
+				<font resource="font" color="%button_text_color%" />
+				<text>Run restorecon</text>
+				<image resource="main_button" />
+				<actions>
+					<action function="set">tw_back=multirom_manage</action>
+					<action function="set">tw_action=multirom_restorecon</action>
+					<action function="set">tw_text1=Run restorecon on "%tw_multirom_rom_name%"?</action>
+					<action function="set">tw_action_text1=Running restorecon</action>
+					<action function="set">tw_complete_text1=SELinux contexts were restored</action>
+					<action function="set">tw_slider_text=Swipe to Confirm</action>
+					<action function="set">tw_show_reboot=0</action>
+					<action function="page">confirm_action</action>
+				</actions>
+			</object>
+
+			<object type="button">
+				<highlight color="%highlight_color%" />
 				<placement x="%col2_x%" y="%row1_y%" />
 				<font resource="font" color="%button_text_color%" />
 				<text>Rename</text>
@@ -483,7 +501,7 @@
 				<condition var1="tw_multirom_is_android" var2="1" />
 				<placement x="%mrom_wipe_col3_x%" y="%row3_y%" />
 				<font resource="font" color="%button_text_color%" />
-				<text>Wipe /cache</text>
+				<text>Wipe cache</text>
 				<image resource="medium_button" />
 				<actions>
 					<action function="set">tw_multirom_wipe=cache</action>
@@ -591,14 +609,11 @@
 				<text>Select Zip to Install</text>
 			</object>
 
-			<object type="button">
-				<highlight color="%highlight_color%" />
-				<fill color="%button_fill_color%" />
+			<object type="button" style="fillbutton">
 				<placement x="%button_full_center_x%" y="%zipstorage_text_y%" w="%button_fill_full_width%" h="%button_fill_quarter_height%" />
-				<font resource="font" color="%button_text_color%" />
 				<text>Storage: %tw_storage_display_name% (%tw_storage_free_size% MB)</text>
 				<actions>
-					<action function="set">tw_back=multirom_flash_select</action>
+					<action function="set">tw_back=install</action>
 					<action function="page">selectstorage</action>
 				</actions>
 			</object>
@@ -696,6 +711,7 @@
 			</object>
 
 			<object type="slider">
+				<text>Swipe to Confirm Flash</text>
 				<placement x="%slider_x%" y="%slider_y%" placement="5" />
 				<resource base="slider" used="slider-used" touch="slider-touch" />
 				<actions>
@@ -706,12 +722,6 @@
 					<action function="set">tw_action=%tw_mrom_flash_action%</action>
 					<action function="page">action_page</action>
 				</actions>
-			</object>
-
-			<object type="text" color="%text_color%">
-				<font resource="font" />
-				<placement x="%center_x%" y="%slider_text_y%" placement="4" />
-				<text>Swipe to Confirm Flash</text>
 			</object>
 
 			<object type="action">
@@ -1242,14 +1252,11 @@
 				<text>MultiROM - Inject boot.img</text>
 			</object>
 
-			<object type="button">
-				<highlight color="%highlight_color%" />
-				<fill color="%button_fill_color%" />
+			<object type="button" style="fillbutton">
 				<placement x="%button_full_center_x%" y="%zipstorage_text_y%" w="%button_fill_full_width%" h="%button_fill_quarter_height%" />
-				<font resource="font" color="%button_text_color%" />
 				<text>Storage: %tw_storage_display_name% (%tw_storage_free_size% MB)</text>
 				<actions>
-					<action function="set">tw_back=multirom_inject_select</action>
+					<action function="set">tw_back=install</action>
 					<action function="page">selectstorage</action>
 				</actions>
 			</object>
@@ -1499,14 +1506,11 @@
 				<text>MultiROM - Add ROM</text>
 			</object>
 
-			<object type="button">
-				<highlight color="%highlight_color%" />
-				<fill color="%button_fill_color%" />
+			<object type="button" style="fillbutton">
 				<placement x="%button_full_center_x%" y="%zipstorage_text_y%" w="%button_fill_full_width%" h="%button_fill_quarter_height%" />
-				<font resource="font" color="%button_text_color%" />
 				<text>Storage: %tw_storage_display_name% (%tw_storage_free_size% MB)</text>
 				<actions>
-					<action function="set">tw_back=multirom_add_select</action>
+					<action function="set">tw_back=install</action>
 					<action function="page">selectstorage</action>
 				</actions>
 			</object>
@@ -2433,6 +2437,7 @@
 			</object>
 
 			<object type="slider">
+				<text>Swipe to swap ROMs</text>
 				<condition var1="tw_multirom_swap_rom" var2="" />
 				<placement x="%slider_x%" y="%slider_y%" placement="5" />
 				<resource base="slider" used="slider-used" touch="slider-touch" />
@@ -2446,13 +2451,6 @@
 					<action function="overlay">multirom_swap_space_info</action>
 					<action function="multirom_swap_calc_space"></action>
 				</actions>
-			</object>
-
-			<object type="text" color="%text_color%">
-				<condition var1="tw_multirom_swap_rom" var2="" />
-				<font resource="font" />
-				<placement x="%center_x%" y="%slider_text_y%" placement="4" />
-				<text>Swipe to swap ROMs</text>
 			</object>
 
 			<object type="text" color="%text_success_color%">

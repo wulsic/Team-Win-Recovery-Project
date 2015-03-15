@@ -5,6 +5,10 @@
 
 #include "../minzip/Zip.h"
 
+extern "C" {
+#include "../minuitwrp/minui.h"
+}
+
 // Base Objects
 class Resource
 {
@@ -13,14 +17,16 @@ public:
 	virtual ~Resource() {}
 
 public:
-	virtual void* GetResource(void) = 0;
-	std::string GetName(void) { return mName; }
+	std::string GetName() { return mName; }
+	virtual bool loadedOK() = 0;
 
 private:
 	std::string mName;
 
 protected:
 	static int ExtractResource(ZipArchive* pZip, std::string folderName, std::string fileName, std::string fileExtn, std::string destFile);
+	static void LoadImage(ZipArchive* pZip, std::string file, gr_surface* source);
+	static void CheckAndScaleImage(gr_surface source, gr_surface* destination, int retain_aspect);
 };
 
 class FontResource : public Resource
@@ -38,7 +44,10 @@ public:
 	virtual ~FontResource();
 
 public:
-	virtual void* GetResource(void) { return mFont; }
+	void* GetResource() { return this ? mFont : NULL; }
+	int GetHeight() { return gr_getMaxFontHeight(this ? mFont : NULL); }
+
+	virtual bool loadedOK() { return mFont != NULL; }
 
 protected:
 	void* mFont;
@@ -48,11 +57,15 @@ protected:
 class ImageResource : public Resource
 {
 public:
-	ImageResource(xml_node<>* node, ZipArchive* pZip);
+	ImageResource(xml_node<>* node, ZipArchive* pZip, int retain_aspect);
 	virtual ~ImageResource();
 
 public:
-	virtual void* GetResource(void) { return mSurface; }
+	gr_surface GetResource() { return this ? mSurface : NULL; }
+	int GetWidth() { return gr_get_width(this ? mSurface : NULL); }
+	int GetHeight() { return gr_get_height(this ? mSurface : NULL); }
+
+	virtual bool loadedOK() { return mSurface != NULL; }
 
 protected:
 	gr_surface mSurface;
@@ -61,13 +74,16 @@ protected:
 class AnimationResource : public Resource
 {
 public:
-	AnimationResource(xml_node<>* node, ZipArchive* pZip);
+	AnimationResource(xml_node<>* node, ZipArchive* pZip, int retain_aspect);
 	virtual ~AnimationResource();
 
 public:
-	virtual void* GetResource(void) { return mSurfaces.empty() ? NULL : mSurfaces.at(0); }
-	virtual void* GetResource(int entry) { return mSurfaces.empty() ? NULL : mSurfaces.at(entry); }
-	virtual int GetResourceCount(void) { return mSurfaces.size(); }
+	gr_surface GetResource() { return (!this || mSurfaces.empty()) ? NULL : mSurfaces.at(0); }
+	gr_surface GetResource(int entry) { return (!this || mSurfaces.empty()) ? NULL : mSurfaces.at(entry); }
+	int GetWidth() { return gr_get_width(this ? GetResource() : NULL); }
+	int GetHeight() { return gr_get_height(this ? GetResource() : NULL); }
+	int GetResourceCount() { return mSurfaces.size(); }
+	virtual bool loadedOK() { return !mSurfaces.empty(); }
 
 protected:
 	std::vector<gr_surface> mSurfaces;

@@ -37,6 +37,7 @@
 extern "C" {
 #include "../twcommon.h"
 #include "../minuitwrp/minui.h"
+#include "gui.h"
 }
 
 #include "rapidxml.hpp"
@@ -47,7 +48,8 @@ GUIKeyboard::GUIKeyboard(xml_node<>* node)
 {
 	int layoutindex, rowindex, keyindex, Xindex, Yindex, keyHeight = 0, keyWidth = 0;
 	rowY = colX = -1;
-	highlightRenderCount = hasHighlight = hasCapsHighlight = 0;
+	highlightRenderCount = 0;
+	hasHighlight = hasCapsHighlight = false;
 	char resource[10], layout[8], row[5], key[6], longpress[7];
 	xml_attribute<>* attr;
 	xml_node<>* child;
@@ -60,48 +62,29 @@ GUIKeyboard::GUIKeyboard(xml_node<>* node)
 	mRendered = false;
 	currentLayout = 1;
 	mAction = NULL;
-	KeyboardHeight = KeyboardWidth = cursorLocation = 0;
+	KeyboardHeight = KeyboardWidth = 0;
 
 	if (!node)  return;
 
 	// Load the action
-	child = node->first_node("action");
+	child = FindNode(node, "action");
 	if (child)
 	{
 		mAction = new GUIAction(node);
 	}
 
-	memset(&mHighlightColor, 0, sizeof(COLOR));
-	child = node->first_node("highlight");
-	if (child) {
-		attr = child->first_attribute("color");
-		if (attr) {
-			hasHighlight = 1;
-			std::string color = attr->value();
-			ConvertStrToColor(color, &mHighlightColor);
-		}
-	}
-
-	memset(&mCapsHighlightColor, 0, sizeof(COLOR));
-	child = node->first_node("capshighlight");
-	if (child) {
-		attr = child->first_attribute("color");
-		if (attr) {
-			hasCapsHighlight = 1;
-			std::string color = attr->value();
-			ConvertStrToColor(color, &mCapsHighlightColor);
-		}
-	}
+	mHighlightColor = LoadAttrColor(FindNode(node, "highlight"), "color", &hasHighlight);
+	mCapsHighlightColor = LoadAttrColor(FindNode(node, "capshighlight"), "color", &hasCapsHighlight);
 
 	// Load the images for the different layouts
-	child = node->first_node("layout");
+	child = FindNode(node, "layout");
 	if (child)
 	{
 		layoutindex = 1;
 		strcpy(resource, "resource1");
 		attr = child->first_attribute(resource);
 		while (attr && layoutindex < (MAX_KEYBOARD_LAYOUTS + 1)) {
-			keyboardImg[layoutindex - 1] = PageManager::FindResource(attr->value());
+			keyboardImg[layoutindex - 1] = LoadAttrImage(child, resource);
 
 			layoutindex++;
 			resource[8] = (char)(layoutindex + 48);
@@ -112,14 +95,14 @@ GUIKeyboard::GUIKeyboard(xml_node<>* node)
 	// Check the first image to get height and width
 	if (keyboardImg[0] && keyboardImg[0]->GetResource())
 	{
-		KeyboardWidth = gr_get_width(keyboardImg[0]->GetResource());
-		KeyboardHeight = gr_get_height(keyboardImg[0]->GetResource());
+		KeyboardWidth = keyboardImg[0]->GetWidth();
+		KeyboardHeight = keyboardImg[0]->GetHeight();
 	}
 
 	// Load all of the layout maps
 	layoutindex = 1;
 	strcpy(layout, "layout1");
-	keylayout = node->first_node(layout);
+	keylayout = FindNode(node, layout);
 	while (keylayout)
 	{
 		if (layoutindex > MAX_KEYBOARD_LAYOUTS) {
@@ -131,12 +114,12 @@ GUIKeyboard::GUIKeyboard(xml_node<>* node)
 		if (child) {
 			attr = child->first_attribute("height");
 			if (attr)
-				keyHeight = atoi(attr->value());
+				keyHeight = scale_theme_y(atoi(attr->value()));
 			else
 				keyHeight = 0;
 			attr = child->first_attribute("width");
 			if (attr)
-				keyWidth = atoi(attr->value());
+				keyWidth = scale_theme_x(atoi(attr->value()));
 			else
 				keyWidth = 0;
 			attr = child->first_attribute("capslock");
@@ -171,136 +154,35 @@ GUIKeyboard::GUIKeyboard(xml_node<>* node)
 			attr = keyrow->first_attribute(key);
 
 			while (attr) {
-				string stratt;
-				char keyinfo[255];
-
 				if (keyindex > MAX_KEYBOARD_KEYS) {
 					LOGERR("Too many keys defined in a keyboard row.\n");
 					return;
 				}
 
-				stratt = attr->value();
-				if (strlen(stratt.c_str()) >= 255) {
-					LOGERR("Key info on layout%i, row%i, key%dd is too long.\n", layoutindex, rowindex, keyindex);
-					return;
-				}
-
-				strcpy(keyinfo, stratt.c_str());
+				const char* keyinfo = attr->value();
 
 				if (strlen(keyinfo) == 0) {
 					LOGERR("No key info on layout%i, row%i, key%dd.\n", layoutindex, rowindex, keyindex);
 					return;
 				}
 
-				if (strlen(keyinfo) == 1) {
-					// This is a single key, simple definition
-					keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].key = keyinfo[0];
-					Xindex += keyWidth;
-					keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].end_x = Xindex - 1;
-				} else {
-					// This key has extra data
-					char* ptr;
-					char* offset;
-					char* keyitem;
-					char foratoi[10];
+				if (ParseKey(keyinfo, keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1], Xindex, keyWidth, false))
+					LOGERR("Invalid key info on layout%i, row%i, key%02i.\n", layoutindex, rowindex, keyindex);
 
-					ptr = keyinfo;
-					offset = keyinfo;
-					while (*ptr > 32 && *ptr != ':')
-						ptr++;
-					if (*ptr != 0)
-						*ptr = 0;
-
-					strcpy(foratoi, offset);
-					Xindex += atoi(foratoi);
-					keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].end_x = Xindex - 1;
-
-					ptr++;
-					if (*ptr == 0) {
-						// This is an empty area
-						keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].key = 0;
-					} else if (strlen(ptr) == 1) {
-						// This is the character that this key uses
-						keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].key = *ptr;
-					} else if (*ptr == 'c') {
-						// This is an ASCII character code
-						keyitem = ptr + 2;
-						strcpy(foratoi, keyitem);
-						keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].key = atoi(foratoi);
-					} else if (*ptr == 'l') {
-						// This is a different layout
-						keyitem = ptr + 6;
-						keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].key = KEYBOARD_LAYOUT;
-						strcpy(foratoi, keyitem);
-						keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].layout = atoi(foratoi);
-					} else if (*ptr == 'a') {
-						// This is an action
-						keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].key = KEYBOARD_ACTION;
-					} else
-						LOGERR("Invalid key info on layout%i, row%i, key%02i.\n", layoutindex, rowindex, keyindex);
-				}
 
 				// PROCESS LONG PRESS INFO IF EXISTS
 				sprintf(longpress, "long%02i", keyindex);
 				attr = keyrow->first_attribute(longpress);
 				if (attr) {
-					stratt = attr->value();
-					if (strlen(stratt.c_str()) >= 255) {
-						LOGERR("Key info on layout%i, row%i, key%dd is too long.\n", layoutindex, rowindex, keyindex);
-						return;
-					}
-
-					strcpy(keyinfo, stratt.c_str());
+					const char* keyinfo = attr->value();
 
 					if (strlen(keyinfo) == 0) {
 						LOGERR("No long press info on layout%i, row%i, long%dd.\n", layoutindex, rowindex, keyindex);
 						return;
 					}
 
-					if (strlen(keyinfo) == 1) {
-						// This is a single key, simple definition
-						keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].longpresskey = keyinfo[0];
-					} else {
-						// This key has extra data
-						char* ptr;
-						char* offset;
-						char* keyitem;
-						char foratoi[10];
-
-						ptr = keyinfo;
-						offset = keyinfo;
-						while (*ptr > 32 && *ptr != ':')
-							ptr++;
-						if (*ptr != 0)
-							*ptr = 0;
-
-						strcpy(foratoi, offset);
-						Xindex += atoi(foratoi);
-
-						ptr++;
-						if (*ptr == 0) {
-							// This is an empty area
-							keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].longpresskey = 0;
-						} else if (strlen(ptr) == 1) {
-							// This is the character that this key uses
-							keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].longpresskey = *ptr;
-						} else if (*ptr == 'c') {
-							// This is an ASCII character code
-							keyitem = ptr + 2;
-							strcpy(foratoi, keyitem);
-							keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].longpresskey = atoi(foratoi);
-						} else if (*ptr == 'l') {
-							// This is a different layout
-							keyitem = ptr + 6;
-							keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].longpresskey = KEYBOARD_LAYOUT;
-							strcpy(foratoi, keyitem);
-							keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].layout = atoi(foratoi);
-						} else if (*ptr == 'a') {
-							// This is an action
-							keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1].longpresskey = KEYBOARD_ACTION;
-						} else
-							LOGERR("Invalid long press key info on layout%i, row%i, long%02i.\n", layoutindex, rowindex, keyindex);
-					}
+					if (ParseKey(keyinfo, keyboard_keys[layoutindex - 1][rowindex - 1][keyindex - 1], Xindex, keyWidth, true))
+						LOGERR("Invalid long press key info on layout%i, row%i, long%02i.\n", layoutindex, rowindex, keyindex);
 				}
 				keyindex++;
 				sprintf(key, "key%02i", keyindex);
@@ -312,12 +194,12 @@ GUIKeyboard::GUIKeyboard(xml_node<>* node)
 		}
 		layoutindex++;
 		layout[6] = (char)(layoutindex + 48);
-		keylayout = node->first_node(layout);
+		keylayout = FindNode(node, layout);
 	}
 
 	int x, y, w, h;
 	// Load the placement
-	LoadPlacement(node->first_node("placement"), &x, &y, &w, &h);
+	LoadPlacement(FindNode(node, "placement"), &x, &y, &w, &h);
 	SetActionPos(x, y, KeyboardWidth, KeyboardHeight);
 	SetRenderPos(x, y, w, h);
 	return;
@@ -325,7 +207,49 @@ GUIKeyboard::GUIKeyboard(xml_node<>* node)
 
 GUIKeyboard::~GUIKeyboard()
 {
+}
 
+int GUIKeyboard::ParseKey(const char* keyinfo, keyboard_key_class& key, int& Xindex, int keyWidth, bool longpress)
+{
+	int keychar = 0;
+	if (strlen(keyinfo) == 1) {
+		// This is a single key, simple definition
+		keychar = keyinfo[0];
+	} else {
+		// This key has extra data: {keywidth}:{what_the_key_does}
+		keyWidth = scale_theme_x(atoi(keyinfo));
+
+		const char* ptr = keyinfo;
+		while (*ptr > 32 && *ptr != ':')
+			ptr++;
+		if (*ptr != ':')
+			return -1;  // no colon is an error
+		ptr++;
+
+		if (*ptr == 0) {  // This is an empty area
+			keychar = 0;
+		} else if (strlen(ptr) == 1) {  // This is the character that this key uses
+			keychar = *ptr;
+		} else if (*ptr == 'c') {  // This is an ASCII character code: "c:{number}"
+			keychar = atoi(ptr + 2);
+		} else if (*ptr == 'l') {  // This is a different layout: "layout{number}"
+			keychar = KEYBOARD_LAYOUT;
+			key.layout = atoi(ptr + 6);
+		} else if (*ptr == 'a') {  // This is an action: "action"
+			keychar = KEYBOARD_ACTION;
+		} else
+			return -1;
+	}
+
+	if (longpress) {
+		key.longpresskey = keychar;
+	} else {
+		key.key = keychar;
+		Xindex += keyWidth;
+		key.end_x = Xindex - 1;
+	}
+
+	return 0;
 }
 
 int GUIKeyboard::Render(void)
@@ -421,7 +345,7 @@ int GUIKeyboard::NotifyTouch(TOUCH_STATE state, int x, int y)
 {
 	static int startSelection = -1, was_held = 0, startX = 0;
 	static unsigned char initial_key = 0;
-	unsigned int indexy, indexx, rely, relx, rowIndex = 0;
+	int indexy, indexx, rely, relx, rowIndex = 0;
 
 	rely = y - mRenderY;
 	relx = x - mRenderX;
@@ -511,36 +435,37 @@ int GUIKeyboard::NotifyTouch(TOUCH_STATE state, int x, int y)
 
 		// Find the correct key (column)
 		for (indexx=0; indexx<MAX_KEYBOARD_KEYS; indexx++) {
-			if (keyboard_keys[currentLayout - 1][rowIndex][indexx].end_x > relx) {
+			keyboard_key_class& key = keyboard_keys[currentLayout - 1][rowIndex][indexx];
+			if (key.end_x > relx) {
 				// This is the key that was pressed!
-				if (keyboard_keys[currentLayout - 1][rowIndex][indexx].key != initial_key) {
+				if (key.key != initial_key) {
 					// We dragged off of the starting key
 					startSelection = 0;
 					break;
 				} else if (state == TOUCH_RELEASE && was_held == 0) {
 					DataManager::Vibrate("tw_keyboard_vibrate");
-					if ((int)keyboard_keys[currentLayout - 1][rowIndex][indexx].key < KEYBOARD_SPECIAL_KEYS && (int)keyboard_keys[currentLayout - 1][rowIndex][indexx].key > 0) {
+					if ((int)key.key < KEYBOARD_SPECIAL_KEYS && (int)key.key > 0) {
 						// Regular key
-						PageManager::NotifyKeyboard(keyboard_keys[currentLayout - 1][rowIndex][indexx].key);
+						PageManager::NotifyKeyboard(key.key);
 						if (caps_tracking[currentLayout - 1].capslock == 0 && !caps_tracking[currentLayout - 1].set_capslock) {
 							// caps lock was not set, change layouts
 							currentLayout = caps_tracking[currentLayout - 1].revert_layout;
 							mRendered = false;
 						}
-					} else if ((int)keyboard_keys[currentLayout - 1][rowIndex][indexx].key == KEYBOARD_LAYOUT) {
+					} else if ((int)key.key == KEYBOARD_LAYOUT) {
 						// Switch layouts
-						if (caps_tracking[currentLayout - 1].capslock == 0 && keyboard_keys[currentLayout - 1][rowIndex][indexx].layout == caps_tracking[currentLayout - 1].revert_layout) {
+						if (caps_tracking[currentLayout - 1].capslock == 0 && key.layout == caps_tracking[currentLayout - 1].revert_layout) {
 							if (!caps_tracking[currentLayout - 1].set_capslock) {
 								caps_tracking[currentLayout - 1].set_capslock = 1; // Set the caps lock
 							} else {
 								caps_tracking[currentLayout - 1].set_capslock = 0; // Unset the caps lock and change layouts
-								currentLayout = keyboard_keys[currentLayout - 1][rowIndex][indexx].layout;
+								currentLayout = key.layout;
 							}
 						} else {
-							currentLayout = keyboard_keys[currentLayout - 1][rowIndex][indexx].layout;
+							currentLayout = key.layout;
 						}
 						mRendered = false;
-					} else if ((int)keyboard_keys[currentLayout - 1][rowIndex][indexx].key == KEYBOARD_ACTION) {
+					} else if ((int)key.key == KEYBOARD_ACTION) {
 						// Action
 						highlightRenderCount = 0;
 						if (mAction) {
@@ -548,24 +473,24 @@ int GUIKeyboard::NotifyTouch(TOUCH_STATE state, int x, int y)
 							return (mAction ? mAction->NotifyTouch(state, x, y) : 1);
 						} else {
 							// Send action notification
-							PageManager::NotifyKeyboard(keyboard_keys[currentLayout - 1][rowIndex][indexx].key);
+							PageManager::NotifyKeyboard(key.key);
 						}
 					}
 				} else if (state == TOUCH_HOLD) {
 					was_held = 1;
-					if ((int)keyboard_keys[currentLayout - 1][rowIndex][indexx].key == KEYBOARD_BACKSPACE) {
+					if ((int)key.key == KEYBOARD_BACKSPACE) {
 						// Repeat backspace
-						PageManager::NotifyKeyboard(keyboard_keys[currentLayout - 1][rowIndex][indexx].key);
-					} else if ((int)keyboard_keys[currentLayout - 1][rowIndex][indexx].longpresskey < KEYBOARD_SPECIAL_KEYS && (int)keyboard_keys[currentLayout - 1][rowIndex][indexx].longpresskey > 0) {
+						PageManager::NotifyKeyboard(key.key);
+					} else if ((int)key.longpresskey < KEYBOARD_SPECIAL_KEYS && (int)key.longpresskey > 0) {
 						// Long Press Key
 						DataManager::Vibrate("tw_keyboard_vibrate");
-						PageManager::NotifyKeyboard(keyboard_keys[currentLayout - 1][rowIndex][indexx].longpresskey);
+						PageManager::NotifyKeyboard(key.longpresskey);
 					}
 				} else if (state == TOUCH_REPEAT) {
 					was_held = 1;
-					if ((int)keyboard_keys[currentLayout - 1][rowIndex][indexx].key == KEYBOARD_BACKSPACE) {
+					if ((int)key.key == KEYBOARD_BACKSPACE) {
 						// Repeat backspace
-						PageManager::NotifyKeyboard(keyboard_keys[currentLayout - 1][rowIndex][indexx].key);
+						PageManager::NotifyKeyboard(key.key);
 					}
 				}
 				indexx = MAX_KEYBOARD_KEYS;

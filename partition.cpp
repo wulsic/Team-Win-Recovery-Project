@@ -314,6 +314,7 @@ bool TWPartition::Process_Fstab_Line(string Line, bool Display_Error) {
 						Current_File_System = "emmc";
 						Setup_Image(Display_Error);
 						DataManager::SetValue(TW_IS_ENCRYPTED, 1);
+						DataManager::SetValue(TW_CRYPTO_PWTYPE, cryptfs_get_password_type());
 						DataManager::SetValue(TW_CRYPTO_PASSWORD, "");
 						DataManager::SetValue("tw_crypto_display", "");
 					} else {
@@ -1335,9 +1336,10 @@ bool TWPartition::Repair() {
 	return false;
 }
 
-bool TWPartition::Backup(string backup_folder, const unsigned long long *overall_size, const unsigned long long *other_backups_size) {
-	if (Backup_Method == FILES)
-		return Backup_Tar(backup_folder, overall_size, other_backups_size);
+bool TWPartition::Backup(string backup_folder, const unsigned long long *overall_size, const unsigned long long *other_backups_size, pid_t &tar_fork_pid) {
+	if (Backup_Method == FILES) {
+		return Backup_Tar(backup_folder, overall_size, other_backups_size, tar_fork_pid);
+	}
 	else if (Backup_Method == DD)
 		return Backup_DD(backup_folder);
 	else if (Backup_Method == FLASH_UTILS)
@@ -1467,7 +1469,7 @@ bool TWPartition::Wipe_Encryption() {
 	if (Is_Decrypted) {
 		if (!UnMount(true))
 			return false;
-		if (delete_crypto_blk_dev("userdata") != 0) {
+		if (delete_crypto_blk_dev((char*)("userdata")) != 0) {
 			LOGERR("Error deleting crypto block device, continuing anyway.\n");
 		}
 	}
@@ -1738,7 +1740,18 @@ bool TWPartition::Wipe_F2FS() {
 
 		gui_print("Formatting %s using mkfs.f2fs...\n", Display_Name.c_str());
 		Find_Actual_Block_Device();
-		command = "mkfs.f2fs " + Actual_Block_Device;
+		command = "mkfs.f2fs -t 1";
+		if (!Is_Decrypted && Length != 0) {
+			// Only use length if we're not decrypted
+			char len[32];
+			int mod_length = Length;
+			if (Length < 0)
+				mod_length *= -1;
+			sprintf(len, "%i", mod_length);
+			command += " -r ";
+			command += len;
+		}
+		command += " " + Actual_Block_Device;
 		if (TWFunc::Exec_Cmd(command) == 0) {
 			Recreate_AndSec_Folder();
 			gui_print("Done.\n");
@@ -1810,7 +1823,7 @@ bool TWPartition::Wipe_Data_Without_Wiping_Media() {
 #endif // ifdef TW_OEM_BUILD
 }
 
-bool TWPartition::Backup_Tar(string backup_folder, const unsigned long long *overall_size, const unsigned long long *other_backups_size) {
+bool TWPartition::Backup_Tar(string backup_folder, const unsigned long long *overall_size, const unsigned long long *other_backups_size, pid_t &tar_fork_pid) {
 	char back_name[255], split_index[5];
 	string Full_FileName, Split_FileName, Tar_Args, Command;
 	int use_compression, use_encryption = 0, index, backup_count;
@@ -1852,7 +1865,7 @@ bool TWPartition::Backup_Tar(string backup_folder, const unsigned long long *ove
 	tar.setsize(Backup_Size);
 	tar.partition_name = Backup_Name;
 	tar.backup_folder = backup_folder;
-	if (tar.createTarFork(overall_size, other_backups_size) != 0)
+	if (tar.createTarFork(overall_size, other_backups_size, tar_fork_pid) != 0)
 		return false;
 	return true;
 }

@@ -25,6 +25,8 @@
 #include "verifier.h"
 #include "variables.h"
 #include "openrecoveryscript.hpp"
+#include "fuse_sideload.h"
+#include "multiromedify.h"
 
 extern "C" {
 #include "twcommon.h"
@@ -301,6 +303,51 @@ bool MultiROM::wipe(std::string name, std::string what)
 
 	gui_print("Restoring mountpoints...\n");
 	restoreMounts();
+	return res;
+}
+
+bool MultiROM::restorecon(std::string name)
+{
+	bool res = false;
+	bool replaced_contexts = false;
+
+	std::string file_contexts = getRomsPath() + name;
+	file_contexts += "/boot/file_contexts";
+
+	if(access(file_contexts.c_str(), R_OK) >= 0)
+	{
+		gui_print("Using ROM's file_contexts\n");
+		rename("/file_contexts", "/file_contexts.orig");
+		system_args("cp -a \"%s\" /file_contexts", file_contexts.c_str());
+		replaced_contexts = true;
+	}
+
+	if(!changeMounts(name))
+		goto exit;
+
+#if PLATFORM_SDK_VERSION >= 21
+  #define RESTORECON_ARGS "-RFDv"
+#else
+  #define RESTORECON_ARGS "-RFv"
+#endif
+
+	static const char * const parts[] = { "/system", "/data", "/cache", NULL };
+	for(int i = 0; parts[i]; ++i)
+	{
+		gui_print("Running restorecon on ROM's %s\n", parts[i]);
+		system_args("restorecon %s %s", RESTORECON_ARGS, parts[i]);
+	}
+
+	// SuperSU moves the real app_process into _original
+	gui_print("Settting context for app_processXX_original\n");
+	system("chcon u:object_r:zygote_exec:s0 /system/bin/app_process32_original");
+	system("chcon u:object_r:zygote_exec:s0 /system/bin/app_process64_original");
+
+	restoreMounts();
+	res = true;
+exit:
+	if(replaced_contexts)
+		rename("/file_contexts.orig", "/file_contexts");
 	return res;
 }
 
@@ -845,8 +892,9 @@ bool MultiROM::flashZip(std::string rom, std::string file)
 	int status = INSTALL_ERROR;
 	int verify_status = 0;
 	int wipe_cache = 0;
+	int sideloaded = 0;
 	bool has_block_update = false;
-	std::string boot, sideload_path, sysimg, loop_device;
+	std::string boot, sysimg, loop_device;
 	TWPartition *data, *sys;
 
 	gui_print("Flashing ZIP file %s\n", file.c_str());
@@ -905,12 +953,10 @@ exit:
 	restoreBootPartition();
 	restoreMounts();
 
-	sideload_path = DataManager::GetStrValue("tw_mrom_sideloaded");
-	if(!sideload_path.empty())
-	{
-		unlink(sideload_path.c_str());
-		DataManager::SetValue("tw_mrom_sideloaded", "");
-	}
+	sideloaded = DataManager::GetIntValue("tw_mrom_sideloaded");
+	DataManager::SetValue("tw_mrom_sideloaded", 0);
+	if(sideloaded && file.compare(FUSE_SIDELOAD_HOST_PATHNAME) != 0)
+		remove(file.c_str());
 	return (status == INSTALL_SUCCESS);
 }
 
@@ -978,114 +1024,6 @@ bool MultiROM::verifyZIP(const std::string& file, int &verify_status)
 	return true;
 }
 
-static char *strstr_wildcard(const char *s, const char *find)
-{
-	size_t i,x;
-
-	if(*s == 0 || *find == 0)
-		return NULL;
-
-	while(*s)
-	{
-		i = 0;
-		x = 0;
-		while(s[i])
-		{
-			if(find[x] == '?')
-			{
-				if(find[x+1] != s[i+1])
-				{
-					if(find[x+1] == s[i])
-						++x;
-					else
-						break;
-				}
-			}
-			else if(find[x] != s[i])
-				break;
-
-			++i;
-			++x;
-
-			if(find[x] == 0)
-				return ((char*)s);
-		}
-		++s;
-	}
-	return NULL;
-}
-
-// This needs to fucking go.
-bool MultiROM::skipLine(const char *line)
-{
-
-	if(strstr(line, "mount") && strstr(line, "ui_print"))
-		if (strstr(line, "mount") < strstr(line, "ui_print"))
-			return true;
-
-	if((strstr(line, "mount(") || strstr(line, "mount\"")) && !strstr(line, "ui_print"))
-	{
-		if (strstr(line, "run_program") ||
-			(!strstr_wildcard(line, "/system/?bin/?mount") && !strstr(line, "symlink(")))
-		{
-			return true;
-		}
-	}
-
-	if(strstr(line, "format"))
-		return true;
-
-	if (strstr(line, "boot.img") || strstr(line, m_boot_dev.c_str()) ||
-		strstr(line, "bbootimg") || strstr(line, "zImage"))
-	{
-		return false;
-	}
-
-	if(strstr(line, "/dev/block/"))
-		return true;
-
-	if(strstr(line, "\"dd\"") && strstr(line, "run_program"))
-		return true;
-
-	return false;
-}
-
-void MultiROM::appendBraces(FILE *out, const char *line)
-{
-	int counter = 0;
-	int tildas = 0;
-	for(; *line; ++line)
-	{
-		if(*line == '(')
-			++counter;
-		else if(*line == ')')
-		{
-			--counter;
-			tildas = 0;
-		}
-		else if(*line == ';')
-			++tildas;
-	}
-
-	char c = '(';
-	if(counter < 0)
-	{
-		c = ')';
-		counter *= -1;
-	}
-	else
-		tildas = 0;
-
-	for(int i = 0; i < counter; ++i)
-		fputc(c, out);
-
-	if(tildas)
-		fputc(';', out);
-
-	if(counter || tildas)
-		fputc('\n', out);
-}
-
 bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 {
 	bool res = false;
@@ -1094,10 +1032,9 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 	int script_len;
 	char* script_data = NULL;
 	int itr = 0;
-	char *token, *p, *saveptr;
+	EdifyHacker hacker;
 	bool changed = false;
 
-	char cmd[512];
 	system("rm /tmp/mr_update.zip");
 
 	struct stat info;
@@ -1107,19 +1044,11 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 		return false;
 	}
 
-	sprintf(cmd, "mkdir -p /tmp/%s", MR_UPDATE_SCRIPT_PATH);
-	system(cmd);
-
-	sprintf(cmd, "/tmp/%s", MR_UPDATE_SCRIPT_NAME);
-
-	FILE *new_script = fopen(cmd, "w");
-	if(!new_script)
-		return false;
+	system_args("mkdir -p /tmp/%s", MR_UPDATE_SCRIPT_PATH);
 
 	MemMapping map;
 	if (sysMapFile(file.c_str(), &map) != 0) {
 		LOGERR("Failed to sysMapFile '%s'\n", file.c_str());
-		fclose(new_script);
 		return false;
 	}
 
@@ -1146,57 +1075,21 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 	mzCloseZipArchive(&zip);
 	sysReleaseMap(&map);
 
-	token = strtok_r(script_data, "\n", &saveptr);
-	while(token)
+	if(!hacker.processBuffer(script_data, script_len))
 	{
-		for(p = token; isspace(*p); ++p);
-
-		if(*p == 0 || *p == '#' || !skipLine(p))
-		{
-			fputs(token, new_script);
-			fputc('\n', new_script);
-		}
-		else
-		{
-			changed = true;
-
-			appendBraces(new_script, p);
-
-			if (strstr(p, "format(") == p && strstr(p, "/system"))
-			{
-				fputs("run_program(\"/sbin/sh\", \"-c\", \"grep -q '/system' /etc/mtab || mount /system\");\n", new_script);
-				fputs("run_program(\"/sbin/sh\", \"-c\", \"chattr -R -i /system/*\");\n", new_script);
-				fputs("run_program(\"/sbin/sh\", \"-c\", \"rm -rf /system/*\");\n", new_script);
-			}
-			else if(strstr(p, "block_image_update(") == p)
-			{
-				has_block_update = true;
-
-				fputs(token, new_script);
-				fputc('\n', new_script);
-
-				TWPartition *sys = PartitionManager.Find_Original_Partition_By_Path("/system");
-				if(sys)
-				{
-					fprintf(new_script, "run_program(\"/sbin/sh\", \"-c\", \""
-						"mkdir -p /tmpsystem && mount -t ext4 $(readlink -f -n %s) /tmpsystem && "
-						"(cp -a /tmpsystem/* /system/ || true) && cp_xattrs /tmpsystem /system"
-						"\");\n",
-							sys->Actual_Block_Device.c_str());
-				}
-			}
-			else
-			{
-				// Add dummy line, because ifs need to have something in them
-				fprintf(new_script, "ui_print(\"\"); # orig: \"%s\" - removed by multirom\n", p);
-			}
-		}
-		token = strtok_r(NULL, "\n", &saveptr);
+		gui_print("Failed to process updater-script!\n");
+		goto exit;
 	}
 
 	free(script_data);
 	script_data = NULL;
-	fclose(new_script);
+
+	if(!hacker.writeToFile("/tmp/"MR_UPDATE_SCRIPT_NAME))
+		goto exit;
+
+	has_block_update = (hacker.getProcessFlags() & EDIFY_BLOCK_UPDATES);
+	changed = (hacker.getProcessFlags() & EDIFY_CHANGED);
+	hacker.clear();
 
 	if(has_block_update)
 	{
@@ -1213,9 +1106,15 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 		if(info.st_size < 450*1024*1024)
 		{
 			gui_print("Copying ZIP to /tmp...\n");
-			sprintf(cmd, "cp \"%s\" /tmp/mr_update.zip", file.c_str());
-			system(cmd);
+			system_args("cp \"%s\" /tmp/mr_update.zip", file.c_str());
 			file = "/tmp/mr_update.zip";
+		}
+		else if(file.compare(FUSE_SIDELOAD_HOST_PATHNAME) == 0)
+		{
+			std::string new_file = DataManager::GetStrValue("tw_storage_path") + "/sideload.zip";
+			gui_print("Copying ZIP to %s\n", new_file.c_str());
+			system_args("cp \"%s\" \"%s\"", file.c_str(), new_file.c_str());
+			file = new_file;
 		}
 		else
 		{
@@ -1227,8 +1126,7 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 			gui_print(" \n");
 		}
 
-		sprintf(cmd, "cd /tmp && zip \"%s\" %s", file.c_str(), MR_UPDATE_SCRIPT_NAME);
-		if(system(cmd) != 0)
+		if(system_args("cd /tmp && zip \"%s\" %s", file.c_str(), MR_UPDATE_SCRIPT_NAME) != 0)
 		{
 			system("rm /tmp/mr_update.zip");
 			return false;
@@ -1243,11 +1141,26 @@ exit:
 	free(script_data);
 	mzCloseZipArchive(&zip);
 	sysReleaseMap(&map);
-	fclose(new_script);
 	return false;
 }
 
 bool MultiROM::injectBoot(std::string img_path, bool only_if_older)
+{
+	int tr_my_ver = getTrampolineVersion();
+	if(tr_my_ver <= 0)
+	{
+		gui_print("Failed to get trampoline version: %d\n", tr_my_ver);
+		return false;
+	}
+
+	if(tr_my_ver < 17)
+		return injectBootDeprecated(img_path, only_if_older);
+
+	return system_args("\"%s/trampoline\" --inject=\"%s\" --mrom_dir=\"%s\" %s",
+		m_path.c_str(), img_path.c_str(), m_path.c_str(), only_if_older ? "" : "-f") == 0;
+}
+
+bool MultiROM::injectBootDeprecated(std::string img_path, bool only_if_older)
 {
 	int rd_cmpr;
 	struct bootimg img;
@@ -1288,7 +1201,6 @@ bool MultiROM::injectBoot(std::string img_path, bool only_if_older)
 	{
 		int tr_rd_ver = getTrampolineVersion("/tmp/boot/rd/init", true);
 		int tr_my_ver = getTrampolineVersion();
-
 		if(tr_rd_ver >= tr_my_ver && tr_my_ver > 0)
 		{
 			gui_print("No need to inject bootimg, it has the newest trampoline (v%d)\n", tr_rd_ver);
@@ -2818,7 +2730,7 @@ void MultiROM::startSystemImageUpgrader()
 	DataManager::SetValue("tw_complete_text1", "system-image-upgrader Complete");
 	DataManager::SetValue("tw_has_cancel", 0);
 	DataManager::SetValue("tw_show_reboot", 0);
-	gui_startPage("action_page");
+	gui_startPage("action_page", 0, 1);
 }
 
 bool MultiROM::copyPartWithXAttrs(const std::string& src, const std::string& dst, const std::string& part, bool skipMedia)

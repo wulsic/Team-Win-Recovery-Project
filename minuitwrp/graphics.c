@@ -358,16 +358,13 @@ void gr_flip(void)
         /* flip buffer 180 degrees for devices with physicaly inverted screens */
         unsigned int i;
         unsigned int j;
-        uint8_t tmp;
-        for (i = 0; i < ((vi.xres_virtual * vi.yres)/2); i++) {
-            for (j = 0; j < PIXEL_SIZE; j++) {
-                tmp = gr_mem_surface.data[i * PIXEL_SIZE + j];
-                gr_mem_surface.data[i * PIXEL_SIZE + j] = gr_mem_surface.data[(vi.xres_virtual * vi.yres * PIXEL_SIZE) - ((i+1) * PIXEL_SIZE) + j];
-                gr_mem_surface.data[(vi.xres_virtual * vi.yres * PIXEL_SIZE) - ((i+1) * PIXEL_SIZE) + j] = tmp;
+        for (i = 0; i < vi.yres; i++) {
+            for (j = 0; j < vi.xres; j++) {
+                memcpy(gr_framebuffer[gr_active_fb].data + (i * vi.xres_virtual + j) * PIXEL_SIZE,
+                       gr_mem_surface.data + ((vi.yres - i - 1) * vi.xres_virtual + vi.xres - j - 1) * PIXEL_SIZE, PIXEL_SIZE);
             }
         }
-#endif
-
+#else
         /* copy data from the in-memory surface to the buffer we're about
          * to make active. */
 #ifndef TW_HAS_LANDSCAPE
@@ -375,6 +372,7 @@ void gr_flip(void)
                vi.xres_virtual * vi.yres * PIXEL_SIZE);
 #else
         gr_cpy_fb_with_rotation(gr_framebuffer[gr_active_fb].data, gr_mem_surface.data);
+#endif
 #endif
 
         /* inform the display driver */
@@ -479,6 +477,8 @@ int gr_textEx(int x, int y, const char *s, void* pFont)
         }
     }
 
+    gl->disable(gl, GGL_TEXTURE_2D);
+
     return x;
 }
 
@@ -520,6 +520,8 @@ int gr_textExW(int x, int y, const char *s, void* pFont, int max_width)
 			}
         }
     }
+
+    gl->disable(gl, GGL_TEXTURE_2D);
 
     return x;
 }
@@ -568,7 +570,23 @@ int gr_textExWH(int x, int y, const char *s, void* pFont, int max_width, int max
         }
     }
 
+    gl->disable(gl, GGL_TEXTURE_2D);
+
     return x;
+}
+
+void gr_clip(int x, int y, int w, int h)
+{
+    GGLContext *gl = gr_context;
+    gl->scissor(gl, x, y, w, h);
+    gl->enable(gl, GGL_SCISSOR_TEST);
+}
+
+void gr_noclip()
+{
+    GGLContext *gl = gr_context;
+    gl->scissor(gl, 0, 0, gr_fb_width(), gr_fb_height());
+    gl->disable(gl, GGL_SCISSOR_TEST);
 }
 
 void gr_fill(int x, int y, int w, int h)
@@ -578,11 +596,55 @@ void gr_fill(int x, int y, int w, int h)
     if(gr_is_curr_clr_opaque)
         gl->disable(gl, GGL_BLEND);
 
-    gl->disable(gl, GGL_TEXTURE_2D);
     gl->recti(gl, x, y, x + w, y + h);
 
     if(gr_is_curr_clr_opaque)
         gl->enable(gl, GGL_BLEND);
+}
+
+void gr_line(int x0, int y0, int x1, int y1, int width)
+{
+    GGLContext *gl = gr_context;
+
+    if(gr_is_curr_clr_opaque)
+        gl->disable(gl, GGL_BLEND);
+
+    const int coords0[2] = { x0 << 4, y0 << 4 };
+    const int coords1[2] = { x1 << 4, y1 << 4 };
+    gl->linex(gl, coords0, coords1, width << 4);
+
+    if(gr_is_curr_clr_opaque)
+        gl->enable(gl, GGL_BLEND);
+}
+
+gr_surface gr_render_circle(int radius, unsigned char r, unsigned char g, unsigned char b, unsigned char a)
+{
+    int rx, ry;
+    GGLSurface *surface;
+    const int diameter = radius*2 + 1;
+    const int radius_check = radius*radius + radius*0.8;
+    const uint32_t px = (a << 24) | (b << 16) | (g << 8) | r;
+    uint32_t *data;
+
+    surface = malloc(sizeof(GGLSurface));
+    memset(surface, 0, sizeof(GGLSurface));
+
+    data = malloc(diameter * diameter * 4);
+    memset(data, 0, diameter * diameter * 4);
+
+    surface->version = sizeof(surface);
+    surface->width = diameter;
+    surface->height = diameter;
+    surface->stride = diameter;
+    surface->data = (GGLubyte*)data;
+    surface->format = GGL_PIXEL_FORMAT_RGBA_8888;
+
+    for(ry = -radius; ry <= radius; ++ry)
+        for(rx = -radius; rx <= radius; ++rx)
+            if(rx*rx+ry*ry <= radius_check)
+                *(data + diameter*(radius + ry) + (radius+rx)) = px;
+
+    return surface;
 }
 
 void gr_blit(gr_surface source, int sx, int sy, int w, int h, int dx, int dy) {
@@ -603,6 +665,7 @@ void gr_blit(gr_surface source, int sx, int sy, int w, int h, int dx, int dy) {
     gl->enable(gl, GGL_TEXTURE_2D);
     gl->texCoord2i(gl, sx - dx, sy - dy);
     gl->recti(gl, dx, dy, dx + w, dy + h);
+    gl->disable(gl, GGL_TEXTURE_2D);
 
     if(surface->format == GGL_PIXEL_FORMAT_RGBX_8888)
         gl->enable(gl, GGL_BLEND);
@@ -636,14 +699,15 @@ void* gr_loadFont(const char* fontName)
     if (fd == -1)
     {
         char tmp[128];
-#ifndef TW_HAS_LANDSCAPE
-        sprintf(tmp, "/res/fonts/%s.dat", fontName);
-#else
-        if(gr_get_rotation()%180 == 0)
-            sprintf(tmp, "/res/fonts/%s.dat", fontName);
+#ifdef TW_HAS_LANDSCAPE
+        if(gr_get_rotation()%180 != 0)
+            snprintf(tmp, sizeof(tmp), TWRES "landscape/fonts/%s.dat", fontName);
         else
-            sprintf(tmp, "/res/landscape/fonts/%s.dat", fontName);
 #endif
+        {
+            snprintf(tmp, sizeof(tmp), TWRES "fonts/%s.dat", fontName);
+        }
+
         fd = open(tmp, O_RDONLY);
         if (fd == -1)
             return NULL;
