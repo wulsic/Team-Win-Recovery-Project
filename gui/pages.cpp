@@ -208,8 +208,7 @@ FontResource* LoadAttrFont(xml_node<>* element, const char* attrname)
 	if (name.empty())
 		return NULL;
 	else
-		return (FontResource*) PageManager::FindResource(name);
-	// TODO: make resource lookup type-safe
+		return PageManager::GetResources()->FindFont(name);
 }
 
 ImageResource* LoadAttrImage(xml_node<>* element, const char* attrname)
@@ -218,8 +217,7 @@ ImageResource* LoadAttrImage(xml_node<>* element, const char* attrname)
 	if (name.empty())
 		return NULL;
 	else
-		return (ImageResource*) PageManager::FindResource(name);
-	// TODO: make resource lookup type-safe
+		return PageManager::GetResources()->FindImage(name);
 }
 
 AnimationResource* LoadAttrAnimation(xml_node<>* element, const char* attrname)
@@ -228,8 +226,7 @@ AnimationResource* LoadAttrAnimation(xml_node<>* element, const char* attrname)
 	if (name.empty())
 		return NULL;
 	else
-		return (AnimationResource*) PageManager::FindResource(name);
-	// TODO: make resource lookup type-safe
+		return PageManager::GetResources()->FindAnimation(name);
 }
 
 bool LoadPlacement(xml_node<>* node, int* x, int* y, int* w /* = NULL */, int* h /* = NULL */, RenderObject::Placement* placement /* = NULL */)
@@ -660,9 +657,8 @@ int Page::NotifyVarChange(std::string varName, std::string value)
 
 PageSet::PageSet(char* xmlFile)
 {
-	mResources = NULL;
+	mResources = new ResourceManager;
 	mCurrentPage = NULL;
-	mOverlayPage = NULL;
 
 	mXmlFile = xmlFile;
 	if (xmlFile)
@@ -673,6 +669,7 @@ PageSet::PageSet(char* xmlFile)
 
 PageSet::~PageSet()
 {
+	mOverlays.clear();
 	for (std::vector<Page*>::iterator itr = mPages.begin(); itr != mPages.end(); ++itr)
 		delete *itr;
 
@@ -753,7 +750,7 @@ int PageSet::Load(ZipArchive* package)
 	LOGINFO("Loading resources...\n");
 	child = parent->first_node("resources");
 	if (child)
-		mResources = new ResourceManager(child, package);
+		mResources->LoadResources(child, package);
 
 	LOGINFO("Loading variables...\n");
 	child = parent->first_node("variables");
@@ -949,19 +946,34 @@ std::string PageSet::GetCurrentPage() const
 
 int PageSet::SetOverlay(Page* page)
 {
-	if (mOverlayPage)   mOverlayPage->SetPageFocus(0);
-	mOverlayPage = page;
-	if (mOverlayPage)
-	{
-		mOverlayPage->SetPageFocus(1);
-		mOverlayPage->NotifyVarChange("", "");
+	if (page) {
+		if (mOverlays.size() >= 10) {
+			LOGERR("Too many overlays requested, max is 10.\n");
+			return -1;
+		}
+		page->SetPageFocus(1);
+		page->NotifyVarChange("", "");
+
+		if (!mOverlays.empty())
+			mOverlays.back()->SetPageFocus(0);
+
+		mOverlays.push_back(page);
+	} else {
+		if (!mOverlays.empty()) {
+			mOverlays.back()->SetPageFocus(0);
+			mOverlays.pop_back();
+			if (!mOverlays.empty())
+				mOverlays.back()->SetPageFocus(1);
+			else if (mCurrentPage)
+				mCurrentPage->SetPageFocus(1); // Just in case somehow the regular page lost focus, we'll set it again
+		}
 	}
 	return 0;
 }
 
-Resource* PageSet::FindResource(std::string name)
+const ResourceManager* PageSet::GetResources()
 {
-	return mResources ? mResources->FindResource(name) : NULL;
+	return mResources;
 }
 
 Page* PageSet::FindPage(std::string name)
@@ -1073,7 +1085,14 @@ int PageSet::Render(void)
 	ret = (mCurrentPage ? mCurrentPage->Render() : -1);
 	if (ret < 0)
 		return ret;
-	ret = (mOverlayPage ? mOverlayPage->Render() : -1);
+
+	std::vector<Page*>::iterator iter;
+
+	for (iter = mOverlays.begin(); iter != mOverlays.end(); iter++) {
+		ret = ((*iter) ? (*iter)->Render() : -1);
+		if (ret < 0)
+			return ret;
+	}
 	return ret;
 }
 
@@ -1084,46 +1103,55 @@ int PageSet::Update(void)
 	ret = (mCurrentPage ? mCurrentPage->Update() : -1);
 	if (ret < 0 || ret > 1)
 		return ret;
-	ret = (mOverlayPage ? mOverlayPage->Update() : -1);
+
+	std::vector<Page*>::iterator iter;
+
+	for (iter = mOverlays.begin(); iter != mOverlays.end(); iter++) {
+		ret = ((*iter) ? (*iter)->Update() : -1);
+		if (ret < 0)
+			return ret;
+	}
 	return ret;
 }
 
 int PageSet::NotifyTouch(TOUCH_STATE state, int x, int y)
 {
-	if (mOverlayPage)
-		return (mOverlayPage->NotifyTouch(state, x, y));
+	if (!mOverlays.empty())
+		return mOverlays.back()->NotifyTouch(state, x, y);
 
 	return (mCurrentPage ? mCurrentPage->NotifyTouch(state, x, y) : -1);
 }
 
 int PageSet::NotifyKey(int key, bool down)
 {
-	if (mOverlayPage)
-		return (mOverlayPage->NotifyKey(key, down));
+	if (!mOverlays.empty())
+		return mOverlays.back()->NotifyKey(key, down);
 
 	return (mCurrentPage ? mCurrentPage->NotifyKey(key, down) : -1);
 }
 
 int PageSet::NotifyKeyboard(int key)
 {
-	if (mOverlayPage)
-		return (mOverlayPage->NotifyKeyboard(key));
+	if (!mOverlays.empty())
+		return mOverlays.back()->NotifyKeyboard(key);
 
 	return (mCurrentPage ? mCurrentPage->NotifyKeyboard(key) : -1);
 }
 
 int PageSet::SetKeyBoardFocus(int inFocus)
 {
-	if (mOverlayPage)
-		return (mOverlayPage->SetKeyBoardFocus(inFocus));
+	if (!mOverlays.empty())
+		return mOverlays.back()->SetKeyBoardFocus(inFocus);
 
 	return (mCurrentPage ? mCurrentPage->SetKeyBoardFocus(inFocus) : -1);
 }
 
 int PageSet::NotifyVarChange(std::string varName, std::string value)
 {
-	if (mOverlayPage)
-		mOverlayPage->NotifyVarChange(varName, value);
+	std::vector<Page*>::iterator iter;
+
+	for (iter = mOverlays.begin(); iter != mOverlays.end(); iter++)
+		(*iter)->NotifyVarChange(varName, value);
 
 	return (mCurrentPage ? mCurrentPage->NotifyVarChange(varName, value) : -1);
 }
@@ -1334,17 +1362,9 @@ int PageManager::ChangeOverlay(std::string name)
 	}
 }
 
-Resource* PageManager::FindResource(std::string name)
+const ResourceManager* PageManager::GetResources()
 {
-	return (mCurrentSet ? mCurrentSet->FindResource(name) : NULL);
-}
-
-Resource* PageManager::FindResource(std::string package, std::string name)
-{
-	PageSet* tmp;
-
-	tmp = FindPackage(name);
-	return (tmp ? tmp->FindResource(name) : NULL);
+	return (mCurrentSet ? mCurrentSet->GetResources() : NULL);
 }
 
 int PageManager::SwitchToConsole(void)

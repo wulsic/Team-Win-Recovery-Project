@@ -318,6 +318,9 @@ endif
 ifneq ($(LANDSCAPE_RESOLUTION),)
     LOCAL_CFLAGS += -DTW_HAS_LANDSCAPE
 endif
+ifneq ($(TW_THEME_LANDSCAPE),)
+    LOCAL_CFLAGS += -DTW_HAS_LANDSCAPE
+endif
 ifneq ($(TW_DEFAULT_ROTATION),)
     LOCAL_CFLAGS += -DTW_DEFAULT_ROTATION=$(TW_DEFAULT_ROTATION)
 else
@@ -362,8 +365,21 @@ LOCAL_ADDITIONAL_DEPENDENCIES := \
     fsck_msdos_symlink \
     mkdosfs
 
+# MultiROM additions
+LOCAL_ADDITIONAL_DEPENDENCIES += \
+    zip \
+    gnutar \
+    lz4 \
+    ntfs-3g \
+    cp_xattrs \
+    ls_xattrs \
+
 ifneq ($(TARGET_ARCH), arm64)
-    LOCAL_LDFLAGS += -Wl,-dynamic-linker,/sbin/linker
+    ifneq ($(TARGET_ARCH), x86_64)
+        LOCAL_LDFLAGS += -Wl,-dynamic-linker,/sbin/linker
+    else
+        LOCAL_LDFLAGS += -Wl,-dynamic-linker,/sbin/linker64
+    endif
 else
     LOCAL_LDFLAGS += -Wl,-dynamic-linker,/sbin/linker64
 endif

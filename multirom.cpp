@@ -724,6 +724,9 @@ bool MultiROM::changeMounts(std::string name)
 
 	// We really don't want scripts to be able to write to real partitions
 	system("mv /sbin/umount /sbin/umount.bak");
+	// SuperSU tries *very* hard to mount /data and /system, even looks through
+	// recovery.fstab and manages to mount the real /system
+	system("mv /etc/recovery.fstab /etc/recovery.fstab.bak");
 
 	return true;
 }
@@ -736,6 +739,8 @@ void MultiROM::restoreMounts()
 	gui_print("Restoring mounts...\n");
 
 	system("mv /sbin/umount.bak /sbin/umount");
+	system("mv /etc/recovery.fstab.bak /etc/recovery.fstab");
+
 	// script might have mounted it several times over, we _have_ to umount it all
 	system("sync;"
 		"i=0;"
@@ -893,7 +898,8 @@ bool MultiROM::flashZip(std::string rom, std::string file)
 	int verify_status = 0;
 	int wipe_cache = 0;
 	int sideloaded = 0;
-	bool has_block_update = false;
+	bool restore_script = false;
+	EdifyHacker hacker;
 	std::string boot, sysimg, loop_device;
 	TWPartition *data, *sys;
 
@@ -904,7 +910,7 @@ bool MultiROM::flashZip(std::string rom, std::string file)
 		return false;
 
 	gui_print("Preparing ZIP file...\n");
-	if(!prepareZIP(file, has_block_update))  // may change file var
+	if(!prepareZIP(file, &hacker, restore_script))  // may change file var
 		return false;
 
 	if(!changeMounts(rom))
@@ -923,7 +929,7 @@ bool MultiROM::flashZip(std::string rom, std::string file)
 	if(!fakeBootPartition(boot.c_str()))
 		goto exit;
 
-	if(has_block_update)
+	if(hacker.getProcessFlags() & EDIFY_BLOCK_UPDATES)
 	{
 		gui_print("ZIP uses block updates\n");
 		if(!createFakeSystemImg())
@@ -934,6 +940,13 @@ bool MultiROM::flashZip(std::string rom, std::string file)
 	status = TWinstall_zip(file.c_str(), &wipe_cache);
 	DataManager::SetValue(TW_SIGNED_ZIP_VERIFY_VAR, verify_status);
 
+	if(restore_script && hacker.restoreState() && hacker.writeToFile("/tmp/"MR_UPDATE_SCRIPT_NAME))
+	{
+		gui_print("Restoring original updater-script\n");
+		if(system_args("cd /tmp && zip \"%s\" %s", file.c_str(), MR_UPDATE_SCRIPT_NAME) != 0)
+			LOGERR("Failed to restore original updater-script, THIS ZIP IS NOW UNUSEABLE FOR NON-MULTIROM FLASHING\n");
+	}
+
 	system("rm -r "MR_UPDATE_SCRIPT_PATH);
 	if(file == "/tmp/mr_update.zip")
 		system("rm /tmp/mr_update.zip");
@@ -943,11 +956,11 @@ bool MultiROM::flashZip(std::string rom, std::string file)
 	else
 		gui_print("ZIP successfully installed\n");
 
-	if(has_block_update)
-		system_args("busybox umount -d /tmpsystem");
+	if((hacker.getProcessFlags() & EDIFY_BLOCK_UPDATES) && system_args("busybox umount -d /tmpsystem") != 0)
+		system_args("dev=\"$(losetup | grep 'system\\.img' | grep -o '/.*:')\"; losetup -d \"${dev%%:}\"");
 
 exit:
-	if(has_block_update)
+	if(hacker.getProcessFlags() & EDIFY_BLOCK_UPDATES)
 		failsafeCheckPartition("/tmp/mrom_fakesyspart");
 
 	restoreBootPartition();
@@ -963,7 +976,8 @@ exit:
 bool MultiROM::flashORSZip(std::string file, int *wipe_cache)
 {
 	int status, verify_status = 0;
-	bool has_block_update = false;
+	EdifyHacker hacker;
+	bool restore_script = false;
 
 	gui_print("Flashing ZIP file %s\n", file.c_str());
 
@@ -971,10 +985,10 @@ bool MultiROM::flashORSZip(std::string file, int *wipe_cache)
 		return false;
 
 	gui_print("Preparing ZIP file...\n");
-	if(!prepareZIP(file, has_block_update)) // may change file var
+	if(!prepareZIP(file, &hacker, restore_script)) // may change file var
 		return false;
 
-	if(has_block_update)
+	if(hacker.getProcessFlags() & EDIFY_BLOCK_UPDATES)
 	{
 		gui_print("ZIP uses block updates\n");
 		if(!createFakeSystemImg())
@@ -985,6 +999,13 @@ bool MultiROM::flashORSZip(std::string file, int *wipe_cache)
 	status = TWinstall_zip(file.c_str(), wipe_cache);
 	DataManager::SetValue(TW_SIGNED_ZIP_VERIFY_VAR, verify_status);
 
+	if(restore_script && hacker.restoreState() && hacker.writeToFile("/tmp/"MR_UPDATE_SCRIPT_NAME))
+	{
+		gui_print("Restoring original updater-script\n");
+		if(system_args("cd /tmp && zip \"%s\" %s", file.c_str(), MR_UPDATE_SCRIPT_NAME) != 0)
+			LOGERR("Failed to restore original updater-script, THIS ZIP IS NOW UNUSEABLE FOR NON-MULTIROM FLASHING\n");
+	}
+
 	system("rm -r "MR_UPDATE_SCRIPT_PATH);
 	if(file == "/tmp/mr_update.zip")
 		system("rm /tmp/mr_update.zip");
@@ -994,9 +1015,10 @@ bool MultiROM::flashORSZip(std::string file, int *wipe_cache)
 	else
 		gui_print("ZIP successfully installed\n");
 
-	if(has_block_update)
+	if(hacker.getProcessFlags() & EDIFY_BLOCK_UPDATES)
 	{
-		system_args("busybox umount -d /tmpsystem");
+		if(system_args("busybox umount -d /tmpsystem") != 0)
+			system_args("dev=\"$(losetup | grep 'system\\.img' | grep -o '/.*:')\"; losetup -d \"${dev%%:}\"");
 		failsafeCheckPartition("/tmp/mrom_fakesyspart");
 	}
 
@@ -1024,7 +1046,7 @@ bool MultiROM::verifyZIP(const std::string& file, int &verify_status)
 	return true;
 }
 
-bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
+bool MultiROM::prepareZIP(std::string& file, EdifyHacker *hacker, bool& restore_script)
 {
 	bool res = false;
 
@@ -1032,7 +1054,6 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 	int script_len;
 	char* script_data = NULL;
 	int itr = 0;
-	EdifyHacker hacker;
 	bool changed = false;
 
 	system("rm /tmp/mr_update.zip");
@@ -1075,7 +1096,7 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 	mzCloseZipArchive(&zip);
 	sysReleaseMap(&map);
 
-	if(!hacker.processBuffer(script_data, script_len))
+	if(!hacker->loadBuffer(script_data, script_len))
 	{
 		gui_print("Failed to process updater-script!\n");
 		goto exit;
@@ -1084,14 +1105,15 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 	free(script_data);
 	script_data = NULL;
 
-	if(!hacker.writeToFile("/tmp/"MR_UPDATE_SCRIPT_NAME))
+	hacker->saveState();
+	hacker->replaceOffendings();
+
+	if(!hacker->writeToFile("/tmp/"MR_UPDATE_SCRIPT_NAME))
 		goto exit;
 
-	has_block_update = (hacker.getProcessFlags() & EDIFY_BLOCK_UPDATES);
-	changed = (hacker.getProcessFlags() & EDIFY_CHANGED);
-	hacker.clear();
+	hacker->writeToFile("/tmp/mrom_last_updater_script");
 
-	if(has_block_update)
+	if(hacker->getProcessFlags() & EDIFY_BLOCK_UPDATES)
 	{
 		TWPartition *data = PartitionManager.Find_Original_Partition_By_Path("/data");
 		if(data && info.st_size*2.25 > data->GetSizeFree())
@@ -1101,9 +1123,17 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 		}
 	}
 
-	if(changed)
+	if(hacker->getProcessFlags() & EDIFY_CHANGED)
 	{
-		if(info.st_size < 450*1024*1024)
+		int64_t max_tmp_size = TWFunc::getFreeSpace("/tmp");
+		if(max_tmp_size < 0)
+			max_tmp_size = 450*1024*1024;
+		else
+			max_tmp_size *= 0.45;
+
+		LOGINFO("ZIP size limit for /tmp: %.2f MB\n", double(max_tmp_size)/1024/1024);
+
+		if(info.st_size < max_tmp_size)
 		{
 			gui_print("Copying ZIP to /tmp...\n");
 			system_args("cp \"%s\" /tmp/mr_update.zip", file.c_str());
@@ -1118,12 +1148,8 @@ bool MultiROM::prepareZIP(std::string& file, bool &has_block_update)
 		}
 		else
 		{
-			gui_print(" \n");
-			gui_print("=================================\n");
-			LOGERR("WARN: Modifying the real ZIP, it is too big!\n");
-			LOGERR("The ZIP file is now unusable for non-MultiROM flashing!\n");
-			gui_print("=================================\n");
-			gui_print(" \n");
+			LOGINFO("Modifying ZIP %s in place, gonna restore it later\n", file.c_str());
+			restore_script = true;
 		}
 
 		if(system_args("cd /tmp && zip \"%s\" %s", file.c_str(), MR_UPDATE_SCRIPT_NAME) != 0)
@@ -1518,6 +1544,11 @@ bool MultiROM::createDirs(std::string name, int type)
 				gui_print("Failed to create android folders!\n");
 				return false;
 			}
+			system_args(
+				"chcon u:object_r:system_file:s0 \"%s/system\";"
+				"chcon u:object_r:system_data_file:s0 \"%s/data\";"
+				"chcon u:object_r:cache_file:s0 \"%s/cache\";",
+				base.c_str(), base.c_str(), base.c_str());
 			break;
 		case ROM_UTOUCH_INTERNAL:
 		case ROM_UTOUCH_USB_DIR:
@@ -2366,6 +2397,7 @@ bool MultiROM::sailfishProcessBoot(const std::string& root)
 	int rd_cmpr;
 	struct bootimg img;
 	bool res = false;
+	int ret;
 
 	gui_print("Processing boot.img for SailfishOS\n");
 	system("rm /tmp/boot.img");
@@ -2389,9 +2421,15 @@ bool MultiROM::sailfishProcessBoot(const std::string& root)
 		goto fail_inject;
 	}
 
+	ret = libbootimg_dump_dtb(&img, "/tmp/boot/dtb.img");
+	if(ret < 0 && ret != LIBBOOTIMG_ERROR_NO_BLOB_DATA)
+		gui_print("Failed to extract dtb.img from boot.img!\n");
+	else if(ret >= 0)
+		system_args("cp /tmp/boot/dtb.img \"%s/dtb.img\"", root.c_str());
+
 	// DEPLOY
-	system_args("cp /tmp/boot/initrd.img %s/initrd.img", root.c_str());
-	system_args("cp /tmp/boot/zImage %s/zImage", root.c_str());
+	system_args("cp /tmp/boot/initrd.img \"%s/initrd.img\"", root.c_str());
+	system_args("cp /tmp/boot/zImage \"%s/zImage\"", root.c_str());
 
 	res = true;
 fail_inject:

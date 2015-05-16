@@ -120,17 +120,21 @@ int EdifyFunc::replaceOffendings(std::list<EdifyElement*> **parentList, std::lis
     {
         bool rem = false;
 
-        for(std::list<EdifyElement*>::iterator itr = m_args.begin(); !rem && itr != m_args.end(); ++itr)
+        for(std::list<EdifyElement*>::iterator itr = m_args.begin(); itr != m_args.end(); ++itr)
         {
             if((*itr)->getType() != EDF_VALUE)
                 continue;
 
             const std::string& t = ((EdifyValue*)(*itr))->getText();
             if(t.find("mount") != std::string::npos)
+            {
                 rem = true;
+                break;
+            }
             else if(t.find("boot.img") != NPOS || t.find(MultiROM::getBootDev()) != NPOS ||
                 t.find("zImage") != NPOS || t.find("bootimg") != NPOS)
             {
+                rem = false;
                 break;
             }
             else if(t.find("/dev/block") != NPOS)
@@ -153,15 +157,28 @@ int EdifyFunc::replaceOffendings(std::list<EdifyElement*> **parentList, std::lis
     else if(m_name == "package_extract_file" && m_args.size() >= 2)
     {
         int st = 0;
+
+        static const char * const forbidden_images[] = {
+            "radio", "bootloader", "NON-HLOS.bin", "emmc_appsboot.mbn",
+            "rpm.mbn", "logo.bin", "sdi.mbn", "tz.mbn", "sbl1.mbn",
+            NULL
+        };
+
         for(std::list<EdifyElement*>::iterator itr = m_args.begin(); itr != m_args.end(); ++itr)
         {
             if((*itr)->getType() != EDF_VALUE)
                 continue;
 
-            if(st == 0 && (((EdifyValue*)(*itr))->getText().find("radio") != NPOS ||
-                ((EdifyValue*)(*itr))->getText().find("bootloader") != NPOS))
+            if(st == 0)
             {
-                st = 1;
+                for(int i = 0; forbidden_images[i]; ++i)
+                {
+                    if(((EdifyValue*)(*itr))->getText().find(forbidden_images[i]) != NPOS)
+                    {
+                        st = 1;
+                        break;
+                    }
+                }
             }
             else if(st == 1 && (((EdifyValue*)(*itr))->getText().find("/dev/block/") <= 1))
             {
@@ -216,6 +233,7 @@ EdifyHacker::EdifyHacker()
 
 EdifyHacker::~EdifyHacker()
 {
+    while(restoreState());
     clear();
 }
 
@@ -449,7 +467,7 @@ void EdifyHacker::replaceOffendings()
         m_elements.push_front(new EdifyValue(HACKER_IDENT_LINE));
 }
 
-bool EdifyHacker::processFile(const std::string& path)
+bool EdifyHacker::loadFile(const std::string& path)
 {
     char buf[256];
 
@@ -476,12 +494,10 @@ bool EdifyHacker::processFile(const std::string& path)
     }
 
     fclose(f);
-
-    replaceOffendings();
     return true;
 }
 
-bool EdifyHacker::processBuffer(const char *buf, size_t len)
+bool EdifyHacker::loadBuffer(const char *buf, size_t len)
 {
     clear();
     for(size_t i = 0; i < len; ++i)
@@ -489,7 +505,6 @@ bool EdifyHacker::processBuffer(const char *buf, size_t len)
         if(!add(buf[i]))
             return false;
     }
-    replaceOffendings();
     return true;
 }
 
@@ -506,4 +521,47 @@ bool EdifyHacker::writeToFile(const std::string& path)
         (*itr)->write(f);
     fclose(f);
     return true;
+}
+
+void EdifyHacker::saveState()
+{
+    std::list<EdifyElement*> state;
+    copyElements(&m_elements, &state);
+    m_savedStates.push_back(state);
+}
+
+bool EdifyHacker::restoreState()
+{
+    if(m_savedStates.empty())
+        return false;
+
+    clear();
+
+    m_elements.swap(m_savedStates.back());
+    m_savedStates.pop_back();
+    return true;
+}
+
+void EdifyHacker::copyElements(std::list<EdifyElement*> *src, std::list<EdifyElement*> *dst)
+{
+    for(std::list<EdifyElement*>::const_iterator itr = src->begin(); itr != src->end(); ++itr)
+    {
+        switch((*itr)->getType())
+        {
+            case EDF_VALUE:
+                dst->push_back(new EdifyValue(((EdifyValue*)(*itr))->getText()));
+                break;
+            case EDF_NEWLINE:
+                dst->push_back(new EdifyNewline());
+                break;
+            case EDF_FUNC:
+            {
+                EdifyFunc *src_f = (EdifyFunc*)(*itr);
+                EdifyFunc *dst_f = new EdifyFunc(src_f->getName());
+                copyElements(src_f->getArgs(), dst_f->getArgs());
+                dst->push_back(dst_f);
+                break;
+            }
+        }
+    }
 }

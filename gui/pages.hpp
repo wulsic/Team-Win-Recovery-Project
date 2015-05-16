@@ -90,7 +90,7 @@ public:
 	int SetPage(std::string page);
 	std::string GetCurrentPage() const;
 	int SetOverlay(Page* page);
-	Resource* FindResource(std::string name);
+	const ResourceManager* GetResources();
 
 	// Helper routine for identifing if we're the current page
 	int IsCurrentPage(Page* page);
@@ -117,7 +117,7 @@ protected:
 	std::vector<Page*> mPages;
 	std::vector<xml_node<>*> templates;
 	Page* mCurrentPage;
-	Page* mOverlayPage; // This is a special case, used for "locking" the screen
+	std::vector<Page*> mOverlays; // Special case for popup dialogs and the lock screen
 	std::vector<xml_document<>*> mIncludedDocs;
 };
 
@@ -134,8 +134,7 @@ public:
 	static int ChangePage(std::string name);
 	static std::string GetCurrentPage();
 	static int ChangeOverlay(std::string name);
-	static Resource* FindResource(std::string name);
-	static Resource* FindResource(std::string package, std::string name);
+	static const ResourceManager* GetResources();
 
 	// Used for console-only mode
 	static int SwitchToConsole(void);
